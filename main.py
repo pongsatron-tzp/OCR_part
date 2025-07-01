@@ -44,7 +44,6 @@ if not GEMINI_API_KEY and _dotenv_available:
     except Exception as e:
         logging.warning(f"ข้อผิดพลาดในการโหลดตัวแปรสภาพแวดล้อมจากไฟล์: {e}")
 
-# โฟลเดอร์ชั่วคราวสำหรับเก็บภาพที่ดาวน์โหลดจาก Google Drive
 TEMP_DOWNLOAD_DIR = "temp_downloaded_images"
 os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
 
@@ -53,12 +52,11 @@ CONCURRENCY_OCR = 5
 
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive.readonly' # เปลี่ยนเป็น readonly เพื่อความปลอดภัย
+    'https://www.googleapis.com/auth/drive.readonly'
 ]
 SPREADSHEET_ID = '1_6i1xyBLKiUihb-sEcE9AhEyYAL0h-tRtLdX4_lWWKc'
 SHEET_NAME = 'Part_OCR'
 
-# ขนาดมาตรฐานของ A4 ที่ 600 DPI (พิกเซล)
 A4_WIDTH_PX = 4961
 A4_HEIGHT_PX = 7016
 
@@ -95,14 +93,11 @@ async def preprocess_image_for_a4(image_path: str) -> Image.Image:
     resized_cv_image = cv2.resize(cv_image, (new_width, new_height), interpolation=interpolation_method)
     resized_pil_image = Image.fromarray(cv2.cvtColor(resized_cv_image, cv2.COLOR_BGR2RGB))
 
-    # สร้างภาพพื้นหลังสีขาวขนาด A4
     padded_image = Image.new('RGB', (A4_WIDTH_PX, A4_HEIGHT_PX), color='white')
 
-    # คำนวณตำแหน่งที่จะวางภาพที่ปรับขนาดแล้วให้อยู่ตรงกลาง
     x_offset = (A4_WIDTH_PX - new_width) // 2
     y_offset = (A4_HEIGHT_PX - new_height) // 2
 
-    # วางภาพที่ปรับขนาดแล้วลงบนพื้นหลังสีขาว
     padded_image.paste(resized_pil_image, (x_offset, y_offset))
 
     logging.info(f"ปรับขนาดภาพ {os.path.basename(image_path)} เป็น {resized_pil_image.size} และเพิ่มขอบขาว (padding) ให้เป็นขนาด A4 ({A4_WIDTH_PX}x{A4_HEIGHT_PX})")
@@ -340,7 +335,6 @@ async def write_to_google_sheet(
         values = result.get('values', [])
         next_row = len(values) + 1
         
-        # ปรับ Header: ไม่มี 'รูป (Cropped)' แล้ว
         header = ["เบอร์อะไหล่", "ชื่ออะไหล่", "รุ่นรถ", "ปีรถ", "ราคาปลีก", "ราคาส่ง", "รูป (Original Drive URL)", "Time_stamp"]
         
         if len(values) == 0 or values[0] != header:
@@ -391,7 +385,7 @@ async def main():
         print("\n!!!! ยังไม่ได้กำหนด SPREADSHEET_ID โปรดแก้ไขตัวแปร SPREADSHEET_ID ในโค้ด !!!!")
         sys.exit(1)
 
-    GOOGLE_DRIVE_INPUT_FOLDER_ID = '1Vs9x28IA78S5ZL9g8S1f3xM9AskXLnVX' 
+    GOOGLE_DRIVE_INPUT_FOLDER_ID = '1HKJQiYQuY_XEH3UDe1lvXNX0aJyR7LIZ' 
 
     gemini_model = None
     try:
@@ -422,35 +416,40 @@ async def main():
     logging.info(f"กำลังค้นหาไฟล์รูปภาพที่รองรับใน Google Drive Folder ID: {GOOGLE_DRIVE_INPUT_FOLDER_ID}")
     
     drive_image_files_info: List[Tuple[str, str, str]] = [] # (file_id, file_name, web_view_link)
-    try:
-        # ค้นหาไฟล์รูปภาพในโฟลเดอร์ที่ระบุ
-        query = f"'{GOOGLE_DRIVE_INPUT_FOLDER_ID}' in parents and mimeType contains 'image/' and trashed = false"
-        results = await asyncio.to_thread(
-            lambda: drive_service.files().list(
-                q=query,
-                spaces='drive',
-                fields='files(id, name, webViewLink)' # ดึง webViewLink มาด้วย
-            ).execute()
-        )
-        items = results.get('files', [])
-        for item in items:
-            drive_image_files_info.append((item['id'], item['name'], item.get('webViewLink', 'N/A')))
-        
-    except HttpError as error:
-        logging.critical(f"ข้อผิดพลาดในการค้นหาไฟล์ใน Google Drive: {error}")
-        print(f"\n!!!! ข้อผิดพลาดในการค้นหาไฟล์ใน Google Drive: {error} โปรดตรวจสอบ ID โฟลเดอร์และสิทธิ์การเข้าถึง !!!!")
-        sys.exit(1)
-    except Exception as e:
-        logging.critical(f"ข้อผิดพลาดที่ไม่คาดคิดในการค้นหาไฟล์ใน Google Drive: {e}")
-        print(f"\n!!!! ข้อผิดพลาดที่ไม่คาดคิดในการค้นหาไฟล์ใน Google Drive: {e} !!!!")
-        sys.exit(1)
+    page_token = None
+    while True:
+        try:
+            # ค้นหาไฟล์รูปภาพในโฟลเดอร์ที่ระบุ พร้อม pagination
+            results = await asyncio.to_thread(
+                lambda: drive_service.files().list(
+                    q=f"'{GOOGLE_DRIVE_INPUT_FOLDER_ID}' in parents and mimeType contains 'image/' and trashed = false",
+                    spaces='drive',
+                    fields='nextPageToken, files(id, name, webViewLink)',
+                    pageToken=page_token
+                ).execute()
+            )
+            items = results.get('files', [])
+            for item in items:
+                drive_image_files_info.append((item['id'], item['name'], item.get('webViewLink', 'N/A')))
+            
+            page_token = results.get('nextPageToken', None)
+            if not page_token:
+                break # ไม่มีหน้าถัดไปแล้ว
+        except HttpError as error:
+            logging.critical(f"ข้อผิดพลาดในการค้นหาไฟล์ใน Google Drive: {error}")
+            print(f"\n!!!! ข้อผิดพลาดในการค้นหาไฟล์ใน Google Drive: {error} โปรดตรวจสอบ ID โฟลเดอร์และสิทธิ์การเข้าถึง !!!!")
+            sys.exit(1)
+        except Exception as e:
+            logging.critical(f"ข้อผิดพลาดที่ไม่คาดคิดในการค้นหาไฟล์ใน Google Drive: {e}")
+            print(f"\n!!!! ข้อผิดพลาดที่ไม่คาดคิดในการค้นหาไฟล์ใน Google Drive: {e} !!!!")
+            sys.exit(1)
 
     if not drive_image_files_info:
         logging.warning(f"ไม่พบไฟล์รูปภาพที่รองรับใน Google Drive Folder ID: {GOOGLE_DRIVE_INPUT_FOLDER_ID} ไม่มีรูปภาพให้ประมวลผล")
         print(f"\nคำเตือน: ไม่พบไฟล์รูปภาพที่รองรับใน Google Drive Folder ID: {GOOGLE_DRIVE_INPUT_FOLDER_ID} ไม่มีรูปภาพให้ประมวลผล")
         return
 
-    logging.info(f"พบไฟล์รูปภาพใน Google Drive {len(drive_image_files_info)} ไฟล์ พร้อมประมวลผล")
+    logging.info(f"พบไฟล์รูปภาพใน Google Drive ทั้งหมด {len(drive_image_files_info)} ไฟล์ พร้อมประมวลผล")
 
     print(f"\n=== เริ่มประมวลผล OCR เอกสารสำหรับ {len(drive_image_files_info)} รูปภาพ ===")
     logging.info(f"กำลังเริ่มประมวลผล OCR เอกสารสำหรับ {len(drive_image_files_info)} รูปภาพ (การทำงานพร้อมกันสูงสุด: {CONCURRENCY_OCR})")
@@ -458,7 +457,6 @@ async def main():
     semaphore_ocr = asyncio.Semaphore(CONCURRENCY_OCR)
     ocr_tasks = []
     
-    # ดาวน์โหลดภาพทั้งหมดก่อนเริ่มประมวลผล OCR
     downloaded_files_map = {} # {original_drive_url: local_path}
     for file_id, file_name, web_view_link in drive_image_files_info:
         local_path = await download_image_from_drive(drive_service, file_id, file_name, TEMP_DOWNLOAD_DIR)
@@ -471,7 +469,7 @@ async def main():
                     semaphore=semaphore_ocr,
                 )
             )
-            ocr_tasks.append((task, web_view_link)) # เก็บ URL ของ Drive ไว้ด้วย
+            ocr_tasks.append((task, web_view_link))
 
     results_with_urls = await asyncio.gather(*[t[0] for t in ocr_tasks], return_exceptions=True)
     
@@ -496,18 +494,19 @@ async def main():
     current_time_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     for i, result in enumerate(results_with_urls):
-        original_drive_url = ocr_tasks[i][1] # ดึง URL ของ Drive จาก task ที่เราเก็บไว้
-        local_image_path = ocr_tasks[i][0].result()[0] if not isinstance(result, Exception) else "N/A" # ดึง local path จาก result
-
+        original_drive_url = ocr_tasks[i][1]
+        
+        # ตรวจสอบว่า task ล้มเหลวหรือไม่
         if isinstance(result, Exception):
             logging.error(f"Task ประมวลผลรูปภาพหนึ่งเกิดข้อผิดพลาด (Exception): {result}")
             failed_images_count += 1
-            # เพิ่มข้อมูลลง sheet แม้จะล้มเหลว
+            # ดึงชื่อไฟล์จาก URL ของ Drive เพื่อบันทึกลง Sheet
+            image_filename_for_log = os.path.basename(original_drive_url.split('id=')[-1].split('&')[0]) if 'id=' in original_drive_url else original_drive_url
             sheets_data_to_write.append([
-                os.path.basename(local_image_path) if local_image_path != "N/A" else "N/A", # ใช้ชื่อไฟล์จาก local path
+                image_filename_for_log,
                 "ไม่สามารถประมวลผลรูปภาพนี้ได้ หรือเกิดข้อผิดพลาด", 
                 "", "", "", "", 
-                original_drive_url, # URL ของ Drive
+                original_drive_url,
                 current_time_str
             ])
             continue 
@@ -527,7 +526,7 @@ async def main():
                     item.get("ปีรถ", "N/A"),
                     item.get("ราคาปลีก", "N/A"),
                     item.get("ราคาส่ง", "N/A"),
-                    original_drive_url, # ใช้ URL ของ Drive ที่ดึงมา
+                    original_drive_url,
                     current_time_str
                 ]
                 sheets_data_to_write.append(row_data)
@@ -537,7 +536,7 @@ async def main():
                 image_filename, 
                 "ไม่สามารถประมวลผลรูปภาพนี้ได้ หรือเกิดข้อผิดพลาด", 
                 "", "", "", "", 
-                original_drive_url, # URL ของ Drive
+                original_drive_url,
                 current_time_str
             ])
             failed_images_count += 1
@@ -563,7 +562,6 @@ async def main():
                 for filename, extracted_data_list in document_ocr_results:
                     f.write(f"## {filename}\n\n")
                     f.write("```json\n")
-                    # ไม่ต้องลบ cropped_image_path เพราะไม่มีแล้ว
                     f.write(json.dumps(extracted_data_list, indent=2, ensure_ascii=False))
                     f.write("\n```\n\n")
                     f.write("---\n\n")
@@ -603,7 +601,6 @@ async def main():
     if failed_images_count > 0:
         print(f"\nคำเตือน: มี {failed_images_count} ไฟล์ที่ประมวลผลไม่สำเร็จ ตรวจสอบ Log ด้านบนสำหรับรายละเอียด")
 
-    # ลบไฟล์ที่ดาวน์โหลดชั่วคราวทั้งหมด
     if os.path.exists(TEMP_DOWNLOAD_DIR):
         for f in os.listdir(TEMP_DOWNLOAD_DIR):
             try:
